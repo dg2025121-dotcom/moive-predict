@@ -34,6 +34,10 @@ CATEGORICAL_FEATURES = {
 # 기본으로 체크되어 있을 변수
 DEFAULT_ON = {"first_week_audi", "days_in_top10", "daily_avg_audi", "peak"}
 
+# 기본 변수 세 가지 vs 첫 주 관객수 추가 비교용 고정 변수 세트
+BASE_FEATURES = ["days_in_top10", "peak", "daily_avg_audi"]
+EXTENDED_FEATURES = BASE_FEATURES + ["first_week_audi"]
+
 
 @st.cache_data(show_spinner="데이터를 불러오는 중입니다...")
 def load_data():
@@ -91,6 +95,18 @@ def build_feature_matrix(df: pd.DataFrame, selected_numeric, selected_categorica
     return pd.concat(parts, axis=1)
 
 
+def fit_and_score(numeric_cols, train_df, test_df):
+    """고정된 수치형 변수 목록으로 회귀를 학습하고 R²를 반환."""
+    X_train = train_df[numeric_cols]
+    X_test = test_df[numeric_cols]
+    y_train = train_df["total_audi"].values
+    y_test = test_df["total_audi"].values
+
+    model = LinearRegression().fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    return r2_score(y_test, y_pred)
+
+
 def main():
     st.set_page_config(page_title="영화 흥행 예측기", layout="wide")
     st.title("🎬 영화 흥행 예측기")
@@ -99,7 +115,35 @@ def main():
     daily, movies = load_data()
     merged, period_start, period_end = build_dataset(daily, movies)
 
-    st.subheader("① 예측에 사용할 변수 선택")
+    # 학습/시험 분할 (영화코드 순 정렬 후 열 편마다 앞 세 편이 시험용)
+    train_df = merged[~merged["is_test"]].reset_index(drop=True)
+    test_df = merged[merged["is_test"]].reset_index(drop=True)
+
+    st.subheader("① 기본 변수 vs 첫 주 관객수 추가 비교")
+    st.info(
+        "⚠️ 여기 쓰인 변수들(박스오피스 10위권 체류일수, 일별 평균 관객수, 첫 주 관객수 등)은 "
+        "영화가 개봉해서 상영이 어느 정도 진행된 뒤에야 확정되는 **사후 집계값**입니다. "
+        "따라서 아래 점수는 '개봉 전에 흥행을 얼마나 잘 맞히는가'가 아니라, "
+        "'상영 데이터를 어느 정도 확보한 뒤 총 관객 수를 얼마나 잘 설명하는가'를 보여주는 값입니다."
+    )
+
+    r2_base = fit_and_score(BASE_FEATURES, train_df, test_df)
+    r2_extended = fit_and_score(EXTENDED_FEATURES, train_df, test_df)
+
+    comp1, comp2 = st.columns(2)
+    comp1.metric(
+        "기본 변수 3개 (체류일수·성수기 여부·일별 평균 관객수)",
+        f"{r2_base:.3f}",
+    )
+    comp2.metric(
+        "기본 변수 3개 + 첫 주 관객수",
+        f"{r2_extended:.3f}",
+        delta=f"{r2_extended - r2_base:+.3f}",
+    )
+
+    st.divider()
+
+    st.subheader("② 예측에 사용할 변수 선택")
     selected_numeric = []
     selected_categorical = []
 
@@ -119,10 +163,6 @@ def main():
         st.warning("변수를 최소 1개 이상 선택해 주세요.")
         st.stop()
 
-    # 학습/시험 분할
-    train_df = merged[~merged["is_test"]].reset_index(drop=True)
-    test_df = merged[merged["is_test"]].reset_index(drop=True)
-
     X_all = build_feature_matrix(merged, selected_numeric, selected_categorical)
     X_train = X_all.loc[~merged["is_test"].values].reset_index(drop=True)
     X_test = X_all.loc[merged["is_test"].values].reset_index(drop=True)
@@ -137,7 +177,7 @@ def main():
     mae = mean_absolute_error(y_test, y_pred)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-    st.subheader("② 학습 결과")
+    st.subheader("③ 선택한 변수 기준 학습 결과")
     c1, c2, c3 = st.columns(3)
     c1.metric("학습에 쓴 영화 편수", f"{len(train_df):,}편")
     c2.metric("예측 점수를 잰 영화 편수", f"{len(test_df):,}편")
@@ -148,7 +188,7 @@ def main():
     c5.metric("평균 오차 (MAE)", f"{mae:,.0f}명")
     c6.metric("평균 오차 (RMSE)", f"{rmse:,.0f}명")
 
-    st.subheader("③ 실제 총 관객 수 vs 예측 총 관객 수 (시험용 영화)")
+    st.subheader("④ 실제 총 관객 수 vs 예측 총 관객 수 (시험용 영화)")
 
     actual = y_test.astype(float)
     predicted = y_pred.astype(float)
